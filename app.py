@@ -82,7 +82,7 @@ def home():
     })
 
 
-@app.route("/verify", methods=["POST"])
+@app.route("/verify", methods=["GET", "POST"])
 def verify():
 
     data = request.get_json(silent=True) or {}
