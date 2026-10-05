@@ -3,10 +3,8 @@ import dns.resolver
 import smtplib
 import socket
 import re
-import random
-import string
-import time
 import os
+import time
 
 app = Flask(__name__)
 
@@ -15,33 +13,29 @@ app = Flask(__name__)
 # ============================================================
 
 # IMPORTANT:
-# These must be DEDICATED verification identities.
-# DO NOT put your production sending addresses here.
+# Use DEDICATED verification sender addresses here.
+# DO NOT use your production sending addresses:
+# john@immunisip.com
+# john@immunisdrawings.com
 #
-# Set these in Render Environment Variables:
+# Add these as Render Environment Variables:
 #
 # VERIFY_SENDER_IP
 # VERIFY_SENDER_DRAWINGS
-#
-# Example:
-# VERIFY_SENDER_IP=verify@your-test-domain.com
-# VERIFY_SENDER_DRAWINGS=verify@your-test-domain.com
 
 VERIFY_SENDER_IP = os.environ.get(
-    "VERIFY_SENDER_IP",
-    ""
+    "VERIFY_SENDER_IP", ""
 ).strip().lower()
 
 VERIFY_SENDER_DRAWINGS = os.environ.get(
-    "VERIFY_SENDER_DRAWINGS",
-    ""
+    "VERIFY_SENDER_DRAWINGS", ""
 ).strip().lower()
 
 SMTP_TIMEOUT = 8
 
-# Small delay between SMTP checks.
-# This is intentionally conservative.
+# Conservative delay between checks
 CHECK_DELAY = 0.5
+
 
 # ============================================================
 # GATEWAY DETECTION
@@ -132,10 +126,11 @@ GATEWAY_PATTERNS = {
 
 
 # ============================================================
-# EMAIL FORMAT
+# EMAIL FORMAT CHECK
 # ============================================================
 
 def is_valid_email_format(email):
+
     pattern = (
         r"^[A-Za-z0-9._%+-]+@"
         r"[A-Za-z0-9.-]+\."
@@ -146,23 +141,26 @@ def is_valid_email_format(email):
 
 
 # ============================================================
-# DOMAIN
+# GET DOMAIN
 # ============================================================
 
 def get_domain(email):
+
     try:
         return email.split("@", 1)[1].strip().lower()
+
     except Exception:
         return ""
 
 
 # ============================================================
-# MX LOOKUP
+# MX RECORDS
 # ============================================================
 
 def get_mx_records(domain):
 
     try:
+
         answers = dns.resolver.resolve(
             domain,
             "MX",
@@ -172,13 +170,14 @@ def get_mx_records(domain):
         records = []
 
         for answer in answers:
-            host = str(
+
+            mx_host = str(
                 answer.exchange
             ).rstrip(".").lower()
 
             records.append({
                 "priority": int(answer.preference),
-                "host": host
+                "host": mx_host
             })
 
         records.sort(
@@ -188,6 +187,7 @@ def get_mx_records(domain):
         return records
 
     except Exception:
+
         return []
 
 
@@ -210,6 +210,7 @@ def detect_gateway(mx_records):
         for pattern in patterns:
 
             if pattern.lower() in combined:
+
                 return gateway
 
     return "OTHER"
@@ -221,15 +222,16 @@ def detect_gateway(mx_records):
 
 def classify_smtp_response(code, message):
 
-    msg = (
+    message = (
         message or ""
     ).lower()
 
     # --------------------------------------------------------
-    # Explicit mailbox rejection
+    # CLEAR MAILBOX REJECTION
     # --------------------------------------------------------
 
     rejection_patterns = [
+
         "user unknown",
         "unknown user",
         "unknown recipient",
@@ -245,23 +247,28 @@ def classify_smtp_response(code, message):
         "recipient rejected",
         "user doesn't exist",
         "user does not exist",
+
         "5.1.1",
-        "550 5.1.1"
+        "550 5.1.1",
+        "551 5.1.1",
+        "553 5.1.1"
     ]
 
     for pattern in rejection_patterns:
 
-        if pattern in msg:
+        if pattern in message:
+
             return {
-                "result": "REJECTED",
+                "status": "NOT DELIVERABLE",
                 "reason": "Recipient mailbox rejected by server"
             }
 
     # --------------------------------------------------------
-    # Security / gateway block
+    # SECURITY / GATEWAY BLOCK
     # --------------------------------------------------------
 
     security_patterns = [
+
         "security policy",
         "security policies",
         "blocked by policy",
@@ -274,6 +281,7 @@ def classify_smtp_response(code, message):
         "anti-spam",
         "access denied",
         "policy rejection",
+
         "mimecast",
         "proofpoint",
         "barracuda"
@@ -281,47 +289,61 @@ def classify_smtp_response(code, message):
 
     for pattern in security_patterns:
 
-        if pattern in msg:
+        if pattern in message:
+
             return {
-                "result": "UNKNOWN",
-                "reason": "Recipient gateway/security policy prevented verification"
+                "status": "UNKNOWN",
+                "reason": (
+                    "Recipient gateway or security "
+                    "policy prevented verification"
+                )
             }
 
     # --------------------------------------------------------
-    # Temporary failure
+    # TEMPORARY FAILURE
     # --------------------------------------------------------
 
     if 400 <= code < 500:
 
         return {
-            "result": "UNKNOWN",
+            "status": "UNKNOWN",
             "reason": "Temporary SMTP rejection"
         }
 
     # --------------------------------------------------------
-    # Successful RCPT
+    # SMTP ACCEPTED
     # --------------------------------------------------------
 
     if 200 <= code < 300:
 
         return {
-            "result": "ACCEPTED",
-            "reason": "Recipient server accepted the SMTP recipient"
+            "status": "DELIVERABLE",
+            "reason": (
+                "Recipient server accepted the "
+                "SMTP recipient"
+            )
         }
 
     # --------------------------------------------------------
-    # Permanent rejection
+    # PERMANENT REJECTION
     # --------------------------------------------------------
 
     if 500 <= code < 600:
 
         return {
-            "result": "REJECTED",
-            "reason": "Recipient server permanently rejected the recipient"
+            "status": "NOT DELIVERABLE",
+            "reason": (
+                "Recipient server permanently "
+                "rejected the recipient"
+            )
         }
 
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
+
     return {
-        "result": "UNKNOWN",
+        "status": "UNKNOWN",
         "reason": "SMTP response could not be classified"
     }
 
@@ -331,7 +353,7 @@ def classify_smtp_response(code, message):
 # ============================================================
 
 def smtp_recipient_check(
-    email,
+    recipient_email,
     mx_host,
     sender_email
 ):
@@ -341,7 +363,7 @@ def smtp_recipient_check(
     try:
 
         # ----------------------------------------------------
-        # Connect to recipient MX
+        # CONNECT TO RECIPIENT MAIL SERVER
         # ----------------------------------------------------
 
         smtp = smtplib.SMTP(
@@ -362,17 +384,27 @@ def smtp_recipient_check(
         if code >= 400:
 
             return {
-                "result": "UNKNOWN",
-                "reason": "Recipient server rejected EHLO"
+                "status": "UNKNOWN",
+                "reason": (
+                    "Recipient server rejected EHLO"
+                )
             }
 
         # ----------------------------------------------------
         # MAIL FROM
         #
-        # IMPORTANT:
         # This does NOT send an email.
-        # We stop at RCPT TO.
+        # We stop before DATA.
         # ----------------------------------------------------
+
+        if not sender_email:
+
+            return {
+                "status": "UNKNOWN",
+                "reason": (
+                    "Verification sender is not configured"
+                )
+            }
 
         code, message = smtp.mail(
             sender_email
@@ -381,10 +413,10 @@ def smtp_recipient_check(
         if code >= 400:
 
             return {
-                "result": "UNKNOWN",
+                "status": "UNKNOWN",
                 "reason": (
-                    "Recipient server rejected verification "
-                    "sender"
+                    "Recipient server rejected "
+                    "verification sender"
                 )
             }
 
@@ -393,60 +425,66 @@ def smtp_recipient_check(
         # ----------------------------------------------------
 
         code, message = smtp.rcpt(
-            email
+            recipient_email
         )
 
-        message_text = ""
-
         try:
+
             if isinstance(message, bytes):
+
                 message_text = message.decode(
                     "utf-8",
                     errors="ignore"
                 )
+
             else:
+
                 message_text = str(message)
+
         except Exception:
+
             message_text = ""
 
-        result = classify_smtp_response(
+        return classify_smtp_response(
             code,
             message_text
         )
 
-        return result
-
     except socket.timeout:
 
         return {
-            "result": "UNKNOWN",
-            "reason": "SMTP connection timed out"
+            "status": "UNKNOWN",
+            "reason": (
+                "SMTP connection timed out"
+            )
         }
 
     except ConnectionRefusedError:
 
         return {
-            "result": "UNKNOWN",
-            "reason": "Recipient SMTP server refused connection"
-        }
-
-    except OSError as e:
-
-        return {
-            "result": "UNKNOWN",
+            "status": "UNKNOWN",
             "reason": (
-                "SMTP connection unavailable: "
-                + str(e)
+                "Recipient SMTP server refused connection"
             )
         }
 
-    except Exception as e:
+    except OSError as error:
 
         return {
-            "result": "UNKNOWN",
+            "status": "UNKNOWN",
+            "reason": (
+                "SMTP connection unavailable: "
+                + str(error)
+            )
+        }
+
+    except Exception as error:
+
+        return {
+            "status": "UNKNOWN",
             "reason": (
                 "SMTP verification unavailable: "
-                + str(e)
+                + str(error)
             )
         }
 
@@ -466,7 +504,7 @@ def smtp_recipient_check(
 
 
 # ============================================================
-# CHECK ONE SENDING DOMAIN
+# CHECK RECIPIENT AGAINST SENDING DOMAIN
 # ============================================================
 
 def check_sending_domain(
@@ -478,7 +516,7 @@ def check_sending_domain(
     if not sender_email:
 
         return {
-            "result": "UNKNOWN",
+            "status": "UNKNOWN",
             "confidence": "LOW",
             "reason": (
                 "Dedicated verification sender "
@@ -489,16 +527,18 @@ def check_sending_domain(
     if not mx_records:
 
         return {
-            "result": "UNKNOWN",
+            "status": "UNKNOWN",
             "confidence": "LOW",
-            "reason": "No MX server available"
+            "reason": (
+                "No MX server available"
+            )
         }
 
-    # --------------------------------------------------------
-    # Try MX servers in priority order
-    # --------------------------------------------------------
-
     unknown_reasons = []
+
+    # --------------------------------------------------------
+    # TRY EACH MX SERVER
+    # --------------------------------------------------------
 
     for mx in mx_records:
 
@@ -510,35 +550,46 @@ def check_sending_domain(
             sender_email
         )
 
-        if result["result"] == "ACCEPTED":
+        # ----------------------------------------------------
+        # DELIVERABLE
+        # ----------------------------------------------------
+
+        if result["status"] == "DELIVERABLE":
 
             return {
-                "result": "ACCEPTED",
+                "status": "DELIVERABLE",
                 "confidence": "HIGH",
                 "reason": result["reason"],
                 "mx_host": mx_host
             }
 
-        if result["result"] == "REJECTED":
+        # ----------------------------------------------------
+        # NOT DELIVERABLE
+        # ----------------------------------------------------
+
+        if result["status"] == "NOT DELIVERABLE":
 
             return {
-                "result": "REJECTED",
+                "status": "NOT DELIVERABLE",
                 "confidence": "HIGH",
                 "reason": result["reason"],
                 "mx_host": mx_host
             }
+
+        # ----------------------------------------------------
+        # UNKNOWN
+        # ----------------------------------------------------
 
         unknown_reasons.append(
             result["reason"]
         )
 
-        # Conservative delay
         time.sleep(
             CHECK_DELAY
         )
 
     return {
-        "result": "UNKNOWN",
+        "status": "UNKNOWN",
         "confidence": "LOW",
         "reason": (
             "SMTP verification could not obtain "
@@ -548,7 +599,7 @@ def check_sending_domain(
 
 
 # ============================================================
-# COMPLETE EMAIL VERIFICATION
+# VERIFY EMAIL
 # ============================================================
 
 def verify_email(email):
@@ -556,25 +607,33 @@ def verify_email(email):
     email = email.strip().lower()
 
     # --------------------------------------------------------
-    # Format
+    # EMPTY
     # --------------------------------------------------------
 
     if not email:
 
         return {
-            "status": "RISK",
+            "status": "UNKNOWN",
             "reason": "Email address is empty"
         }
+
+    # --------------------------------------------------------
+    # FORMAT
+    # --------------------------------------------------------
 
     if not is_valid_email_format(email):
 
         return {
-            "status": "RISK",
-            "reason": "Invalid email format"
+            "status": "NOT DELIVERABLE",
+            "reason": "Invalid email format",
+            "recipient_domain": "",
+            "gateway": "UNKNOWN",
+            "ip_result": "NOT DELIVERABLE",
+            "drawings_result": "NOT DELIVERABLE"
         }
 
     # --------------------------------------------------------
-    # Domain
+    # DOMAIN
     # --------------------------------------------------------
 
     domain = get_domain(email)
@@ -582,8 +641,10 @@ def verify_email(email):
     if not domain:
 
         return {
-            "status": "RISK",
-            "reason": "Could not extract recipient domain"
+            "status": "UNKNOWN",
+            "reason": (
+                "Could not extract recipient domain"
+            )
         }
 
     # --------------------------------------------------------
@@ -597,21 +658,34 @@ def verify_email(email):
     if not mx_records:
 
         return {
-            "status": "RISK",
-            "reason": "No valid MX record found",
+
+            "status": "NOT DELIVERABLE",
+
+            "reason": (
+                "No valid MX record found "
+                "for recipient domain"
+            ),
+
             "recipient_domain": domain,
+
             "gateway": "UNKNOWN",
-            "ip_result": "UNKNOWN",
-            "drawings_result": "UNKNOWN"
+
+            "ip_result": "NOT DELIVERABLE",
+
+            "drawings_result": "NOT DELIVERABLE",
+
+            "ip_confidence": "HIGH",
+
+            "drawings_confidence": "HIGH"
         }
+
+    # --------------------------------------------------------
+    # GATEWAY
+    # --------------------------------------------------------
 
     gateway = detect_gateway(
         mx_records
     )
-
-    # --------------------------------------------------------
-    # Prepare MX list
-    # --------------------------------------------------------
 
     mx_hosts = [
         item["host"]
@@ -619,7 +693,7 @@ def verify_email(email):
     ]
 
     # --------------------------------------------------------
-    # IP / immunisip.com
+    # IP TEST
     # --------------------------------------------------------
 
     ip_check = check_sending_domain(
@@ -628,16 +702,12 @@ def verify_email(email):
         VERIFY_SENDER_IP
     )
 
-    # --------------------------------------------------------
-    # Small delay between tests
-    # --------------------------------------------------------
-
     time.sleep(
         CHECK_DELAY
     )
 
     # --------------------------------------------------------
-    # Drawings / immunisdrawings.com
+    # DRAWINGS TEST
     # --------------------------------------------------------
 
     drawings_check = check_sending_domain(
@@ -647,31 +717,31 @@ def verify_email(email):
     )
 
     # --------------------------------------------------------
-    # Overall status
+    # OVERALL STATUS
     # --------------------------------------------------------
 
     if (
-        ip_check["result"] == "REJECTED"
-        and
-        drawings_check["result"] == "REJECTED"
+        ip_check["status"] == "DELIVERABLE"
+        or
+        drawings_check["status"] == "DELIVERABLE"
     ):
 
-        overall_status = "RISK"
+        overall_status = "DELIVERABLE"
 
     elif (
-        ip_check["result"] == "ACCEPTED"
-        or
-        drawings_check["result"] == "ACCEPTED"
+        ip_check["status"] == "NOT DELIVERABLE"
+        and
+        drawings_check["status"] == "NOT DELIVERABLE"
     ):
 
-        overall_status = "VALID"
+        overall_status = "NOT DELIVERABLE"
 
     else:
 
         overall_status = "UNKNOWN"
 
     # --------------------------------------------------------
-    # Reason
+    # REASON
     # --------------------------------------------------------
 
     reason = (
@@ -697,13 +767,13 @@ def verify_email(email):
 
         "mx_records": mx_hosts,
 
-        "ip_result": ip_check["result"],
+        "ip_result": ip_check["status"],
 
         "ip_confidence": ip_check["confidence"],
 
         "ip_reason": ip_check["reason"],
 
-        "drawings_result": drawings_check["result"],
+        "drawings_result": drawings_check["status"],
 
         "drawings_confidence": drawings_check["confidence"],
 
@@ -723,15 +793,23 @@ def verify_email(email):
 def home():
 
     return jsonify({
+
         "status": "online",
-        "service": "IMMUNIS Email Verification API",
-        "version": "6.0",
-        "method": "Conservative SMTP recipient verification"
+
+        "service": (
+            "IMMUNIS Email Verification API"
+        ),
+
+        "version": "7.0",
+
+        "verification": (
+            "DELIVERABLE / NOT DELIVERABLE / UNKNOWN"
+        )
     })
 
 
 # ============================================================
-# VERIFY
+# VERIFY ENDPOINT
 # ============================================================
 
 @app.route(
@@ -739,6 +817,10 @@ def home():
     methods=["GET", "POST"]
 )
 def verify():
+
+    # --------------------------------------------------------
+    # GET
+    # --------------------------------------------------------
 
     if request.method == "GET":
 
@@ -751,6 +833,10 @@ def verify():
             "full_name",
             ""
         ).strip()
+
+    # --------------------------------------------------------
+    # POST
+    # --------------------------------------------------------
 
     else:
 
@@ -766,18 +852,37 @@ def verify():
             data.get("full_name", "")
         ).strip()
 
+    # --------------------------------------------------------
+    # MISSING EMAIL
+    # --------------------------------------------------------
+
     if not email:
 
         return jsonify({
+
             "full_name": full_name,
+
             "email": "",
-            "status": "RISK",
-            "reason": "Email address is missing"
+
+            "status": "UNKNOWN",
+
+            "reason": (
+                "Email address is missing"
+            )
+
         }), 400
+
+    # --------------------------------------------------------
+    # VERIFY
+    # --------------------------------------------------------
 
     result = verify_email(
         email
     )
+
+    # --------------------------------------------------------
+    # RESPONSE
+    # --------------------------------------------------------
 
     response = {
 
@@ -857,20 +962,26 @@ def verify():
 
 
 # ============================================================
-# ERROR HANDLER
+# GLOBAL ERROR HANDLER
 # ============================================================
 
 @app.errorhandler(Exception)
 def handle_exception(error):
 
     return jsonify({
+
         "status": "UNKNOWN",
-        "reason": "Internal verification error: " + str(error)
+
+        "reason": (
+            "Internal verification error: "
+            + str(error)
+        )
+
     }), 500
 
 
 # ============================================================
-# START
+# START SERVER
 # ============================================================
 
 if __name__ == "__main__":
