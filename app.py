@@ -6,11 +6,23 @@ app = Flask(__name__)
 
 
 # =========================================================
+# CONFIGURATION
+# =========================================================
+
+SENDING_DOMAINS = [
+    "immunisip.com",
+    "immunisdrawings.com"
+]
+
+
+# =========================================================
 # EMAIL FORMAT CHECK
 # =========================================================
 
 def is_valid_email_format(email):
+
     pattern = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+
     return re.match(pattern, email) is not None
 
 
@@ -51,7 +63,6 @@ def get_mx_records(domain):
 
 def detect_mail_gateway(mx_records):
 
-    # Combine all MX records
     mx_text = " ".join(mx_records).lower()
 
 
@@ -73,19 +84,18 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "MIMECAST",
-                "security_gateway": True,
-                "provider": "Mimecast"
+                "provider": "Mimecast",
+                "security_gateway": True
             }
 
 
     # -----------------------------------------------------
-    # MICROSOFT 365 / EXCHANGE ONLINE
+    # MICROSOFT 365
     # -----------------------------------------------------
 
     microsoft_keywords = [
         "mail.protection.outlook.com",
-        "protection.outlook.com",
-        "outlook.com"
+        "protection.outlook.com"
     ]
 
     for keyword in microsoft_keywords:
@@ -94,8 +104,8 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "MICROSOFT_365",
-                "security_gateway": True,
-                "provider": "Microsoft 365 / Exchange Online"
+                "provider": "Microsoft 365 / Exchange Online",
+                "security_gateway": True
             }
 
 
@@ -108,8 +118,7 @@ def detect_mail_gateway(mx_records):
         "alt1.aspmx.l.google.com",
         "alt2.aspmx.l.google.com",
         "alt3.aspmx.l.google.com",
-        "alt4.aspmx.l.google.com",
-        "google.com"
+        "alt4.aspmx.l.google.com"
     ]
 
     for keyword in google_keywords:
@@ -118,8 +127,8 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "GOOGLE_WORKSPACE",
-                "security_gateway": False,
-                "provider": "Google Workspace"
+                "provider": "Google Workspace",
+                "security_gateway": False
             }
 
 
@@ -139,8 +148,8 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "PROOFPOINT",
-                "security_gateway": True,
-                "provider": "Proofpoint"
+                "provider": "Proofpoint",
+                "security_gateway": True
             }
 
 
@@ -160,8 +169,8 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "BARRACUDA",
-                "security_gateway": True,
-                "provider": "Barracuda"
+                "provider": "Barracuda",
+                "security_gateway": True
             }
 
 
@@ -171,8 +180,8 @@ def detect_mail_gateway(mx_records):
 
     fortimail_keywords = [
         "fortimail",
-        "fortinet.com",
-        "fortimailcloud.com"
+        "fortimailcloud.com",
+        "fortinet.com"
     ]
 
     for keyword in fortimail_keywords:
@@ -181,8 +190,8 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "FORTIMAIL",
-                "security_gateway": True,
-                "provider": "Fortinet FortiMail"
+                "provider": "Fortinet FortiMail",
+                "security_gateway": True
             }
 
 
@@ -192,8 +201,7 @@ def detect_mail_gateway(mx_records):
 
     cisco_keywords = [
         "iphmx.com",
-        "cisco.com",
-        "esa"
+        "cisco.com"
     ]
 
     for keyword in cisco_keywords:
@@ -202,74 +210,68 @@ def detect_mail_gateway(mx_records):
 
             return {
                 "gateway": "CISCO",
-                "security_gateway": True,
-                "provider": "Cisco Secure Email"
+                "provider": "Cisco Secure Email",
+                "security_gateway": True
             }
 
 
     # -----------------------------------------------------
-    # OTHER KNOWN SECURITY GATEWAYS
+    # OTHER SECURITY GATEWAYS
     # -----------------------------------------------------
 
-    other_gateway_keywords = {
-
-        "sophos": "Sophos",
-
-        "trendmicro": "Trend Micro",
-
-        "forcepoint": "Forcepoint",
-
-        "spamhero": "SpamHero",
-
-        "hornetsecurity": "Hornetsecurity",
-
-        "mimecast": "Mimecast",
-
-        "cloudmark": "Cloudmark",
+    other_gateways = {
 
         "messagelabs": "Symantec / MessageLabs",
 
         "symantec": "Symantec",
 
-        "sendmail": "Sendmail",
-
         "mailchannels": "MailChannels",
-
-        "mailroute": "MailRoute",
 
         "spamexperts": "SpamExperts",
 
-        "spamrl": "SpamRLY",
+        "mailroute": "MailRoute",
 
-        "zerospam": "ZeroSpam"
+        "hornetsecurity": "Hornetsecurity",
+
+        "forcepoint": "Forcepoint",
+
+        "sophos": "Sophos",
+
+        "trendmicro": "Trend Micro",
+
+        "cloudmark": "Cloudmark",
+
+        "zerospam": "ZeroSpam",
+
+        "spamhero": "SpamHero"
 
     }
 
 
-    for keyword, provider in other_gateway_keywords.items():
+    for keyword, provider in other_gateways.items():
 
         if keyword in mx_text:
 
             return {
                 "gateway": "OTHER_GATEWAY",
-                "security_gateway": True,
-                "provider": provider
+                "provider": provider,
+                "security_gateway": True
             }
 
 
     # -----------------------------------------------------
-    # UNKNOWN / NORMAL MAIL SERVER
+    # NORMAL / UNKNOWN MAIL SERVER
     # -----------------------------------------------------
 
     return {
         "gateway": "OTHER",
-        "security_gateway": False,
-        "provider": "Unknown mail server"
+        "provider": "Unknown mail server",
+        "security_gateway": False
     }
 
 
 # =========================================================
-# EMAIL VERIFICATION
+# VERIFY EMAIL
 # =========================================================
 
 def verify_email(email):
@@ -278,50 +280,52 @@ def verify_email(email):
 
 
     # -----------------------------------------------------
-    # CHECK EMPTY EMAIL
+    # EMPTY EMAIL
     # -----------------------------------------------------
 
     if not email:
 
         return {
-            "status": "RISK",
+            "status": "INVALID",
             "reason": "Email address is empty"
         }
 
 
     # -----------------------------------------------------
-    # CHECK EMAIL FORMAT
+    # EMAIL FORMAT
     # -----------------------------------------------------
 
     if not is_valid_email_format(email):
 
         return {
-            "status": "RISK",
+            "status": "INVALID",
             "reason": "Invalid email format"
         }
 
 
     # -----------------------------------------------------
-    # GET RECIPIENT DOMAIN
+    # EXTRACT DOMAIN
     # -----------------------------------------------------
 
     try:
 
-        domain = email.split("@", 1)[1].strip().lower()
+        recipient_domain = email.split("@", 1)[1].strip().lower()
 
     except Exception:
 
         return {
-            "status": "RISK",
+            "status": "INVALID",
             "reason": "Could not extract recipient domain"
         }
 
 
     # -----------------------------------------------------
-    # GET MX RECORDS
+    # GET MX
     # -----------------------------------------------------
 
-    mx_records = get_mx_records(domain)
+    mx_records = get_mx_records(
+        recipient_domain
+    )
 
 
     # -----------------------------------------------------
@@ -334,17 +338,21 @@ def verify_email(email):
 
             "status": "NO_MX",
 
-            "reason": "No valid MX record found for recipient domain",
+            "reason": (
+                "No valid MX record found for recipient domain"
+            ),
 
-            "recipient_domain": domain,
+            "recipient_email": email,
 
-            "mx_records": [],
+            "recipient_domain": recipient_domain,
 
             "gateway": "NONE",
 
             "provider": "None",
 
-            "security_gateway": False
+            "security_gateway": False,
+
+            "mx_records": []
         }
 
 
@@ -352,7 +360,9 @@ def verify_email(email):
     # DETECT GATEWAY
     # -----------------------------------------------------
 
-    gateway_info = detect_mail_gateway(mx_records)
+    gateway_info = detect_mail_gateway(
+        mx_records
+    )
 
     gateway = gateway_info["gateway"]
 
@@ -362,7 +372,7 @@ def verify_email(email):
 
 
     # -----------------------------------------------------
-    # SET STATUS
+    # DETERMINE STATUS
     # -----------------------------------------------------
 
     if gateway == "MIMECAST":
@@ -370,7 +380,8 @@ def verify_email(email):
         status = "MIMECAST"
 
         reason = (
-            "Mimecast mail gateway detected from recipient MX records"
+            "Mimecast mail gateway detected from "
+            "recipient MX records"
         )
 
 
@@ -379,8 +390,8 @@ def verify_email(email):
         status = "MICROSOFT_365"
 
         reason = (
-            "Microsoft 365 / Exchange Online mail gateway detected "
-            "from recipient MX records"
+            "Microsoft 365 / Exchange Online "
+            "mail gateway detected from recipient MX records"
         )
 
 
@@ -389,7 +400,8 @@ def verify_email(email):
         status = "GOOGLE_WORKSPACE"
 
         reason = (
-            "Google Workspace mail server detected from recipient MX records"
+            "Google Workspace mail server detected "
+            "from recipient MX records"
         )
 
 
@@ -408,12 +420,13 @@ def verify_email(email):
         status = "VALID"
 
         reason = (
-            "Valid email format and recipient mail server found"
+            "Valid email format and recipient "
+            "mail server found"
         )
 
 
     # -----------------------------------------------------
-    # RETURN RESULT
+    # FINAL RESULT
     # -----------------------------------------------------
 
     return {
@@ -424,7 +437,7 @@ def verify_email(email):
 
         "recipient_email": email,
 
-        "recipient_domain": domain,
+        "recipient_domain": recipient_domain,
 
         "gateway": gateway,
 
@@ -432,12 +445,17 @@ def verify_email(email):
 
         "security_gateway": security_gateway,
 
-        "mx_records": mx_records
+        "mx_records": mx_records,
+
+        "mailbox_verified": False,
+
+        "verification_level": "DOMAIN_AND_MX_ONLY"
+
     }
 
 
 # =========================================================
-# HOME
+# HOME / API STATUS
 # =========================================================
 
 @app.route("/", methods=["GET"])
@@ -447,15 +465,28 @@ def home():
 
         "status": "online",
 
-        "service": "Email Verification API",
+        "service": "IMMUNIS Email Verification API",
 
-        "version": "4.0"
+        "version": "5.0",
+
+        "sending_domains": SENDING_DOMAINS,
+
+        "verification": [
+            "EMAIL_FORMAT",
+            "DOMAIN",
+            "MX",
+            "MAIL_GATEWAY"
+        ],
+
+        "note": (
+            "Individual mailbox existence cannot be "
+            "guaranteed through DNS/MX alone."
+        )
     })
 
 
 # =========================================================
 # VERIFY ENDPOINT
-# GET + POST
 # =========================================================
 
 @app.route("/verify", methods=["GET", "POST"])
@@ -463,7 +494,7 @@ def verify():
 
 
     # -----------------------------------------------------
-    # GET
+    # GET REQUEST
     # -----------------------------------------------------
 
     if request.method == "GET":
@@ -480,7 +511,7 @@ def verify():
 
 
     # -----------------------------------------------------
-    # POST
+    # POST REQUEST
     # -----------------------------------------------------
 
     else:
@@ -518,7 +549,7 @@ def verify():
 
             "recipient_domain": "",
 
-            "status": "RISK",
+            "status": "INVALID",
 
             "reason": "Email address is missing"
 
@@ -540,7 +571,10 @@ def verify():
 
         "full_name": full_name,
 
-        "recipient_email": email,
+        "recipient_email": result.get(
+            "recipient_email",
+            email
+        ),
 
         "recipient_domain": result.get(
             "recipient_domain",
@@ -549,7 +583,7 @@ def verify():
 
         "status": result.get(
             "status",
-            "RISK"
+            "UNKNOWN"
         ),
 
         "reason": result.get(
@@ -572,6 +606,16 @@ def verify():
             False
         ),
 
+        "mailbox_verified": result.get(
+            "mailbox_verified",
+            False
+        ),
+
+        "verification_level": result.get(
+            "verification_level",
+            "UNKNOWN"
+        ),
+
         "mx_records": result.get(
             "mx_records",
             []
@@ -583,7 +627,379 @@ def verify():
 
 
 # =========================================================
-# RUN
+# BOUNCE ANALYZER
+# =========================================================
+#
+# This endpoint is for ACTUAL bounce messages.
+#
+# Example:
+#
+# POST /bounce
+#
+# {
+#   "email": "person@example.com",
+#   "sending_domain": "immunisdrawings.com",
+#   "bounce_message": "550 User unknown"
+# }
+#
+# =========================================================
+
+@app.route("/bounce", methods=["POST"])
+def bounce():
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+
+    email = str(
+        data.get(
+            "email",
+            ""
+        )
+    ).strip().lower()
+
+
+    sending_domain = str(
+        data.get(
+            "sending_domain",
+            ""
+        )
+    ).strip().lower()
+
+
+    bounce_message = str(
+        data.get(
+            "bounce_message",
+            ""
+        )
+    ).strip()
+
+
+    # -----------------------------------------------------
+    # MISSING DATA
+    # -----------------------------------------------------
+
+    if not email or not bounce_message:
+
+        return jsonify({
+
+            "status": "UNKNOWN",
+
+            "reason": (
+                "Recipient email and bounce message "
+                "are required"
+            )
+
+        }), 400
+
+
+    # -----------------------------------------------------
+    # EXTRACT RECIPIENT DOMAIN
+    # -----------------------------------------------------
+
+    try:
+
+        recipient_domain = email.split(
+            "@",
+            1
+        )[1]
+
+    except Exception:
+
+        recipient_domain = ""
+
+
+    # -----------------------------------------------------
+    # LOWERCASE BOUNCE
+    # -----------------------------------------------------
+
+    bounce_text = bounce_message.lower()
+
+
+    # -----------------------------------------------------
+    # MAILBOX NOT FOUND
+    # -----------------------------------------------------
+
+    mailbox_keywords = [
+
+        "user unknown",
+
+        "unknown user",
+
+        "mailbox unavailable",
+
+        "mailbox not found",
+
+        "recipient not found",
+
+        "no such user",
+
+        "no such mailbox",
+
+        "user does not exist",
+
+        "account does not exist",
+
+        "address rejected",
+
+        "invalid recipient",
+
+        "recipient address rejected",
+
+        "550 5.1.1",
+
+        "550 5.1.10",
+
+        "551 5.1.1"
+
+    ]
+
+
+    for keyword in mailbox_keywords:
+
+        if keyword in bounce_text:
+
+            return jsonify({
+
+                "status": "REJECTED",
+
+                "block_type": "MAILBOX",
+
+                "reason": (
+                    "Recipient mailbox appears to be "
+                    "invalid or unavailable"
+                ),
+
+                "recipient_email": email,
+
+                "recipient_domain": recipient_domain,
+
+                "sending_domain": sending_domain,
+
+                "bounce_match": keyword
+
+            })
+
+
+    # -----------------------------------------------------
+    # MAIL FLOW RULE
+    # -----------------------------------------------------
+
+    mail_flow_keywords = [
+
+        "blocked by mail flow rule",
+
+        "mail flow rule",
+
+        "transport rule",
+
+        "message blocked by administrator",
+
+        "organization policy",
+
+        "organizational policy"
+
+    ]
+
+
+    for keyword in mail_flow_keywords:
+
+        if keyword in bounce_text:
+
+            return jsonify({
+
+                "status": "BLOCKED",
+
+                "block_type": "MAIL_FLOW",
+
+                "reason": (
+                    "Recipient organization blocked "
+                    "the message through a mail flow or "
+                    "transport rule"
+                ),
+
+                "recipient_email": email,
+
+                "recipient_domain": recipient_domain,
+
+                "sending_domain": sending_domain,
+
+                "bounce_match": keyword
+
+            })
+
+
+    # -----------------------------------------------------
+    # MIMECAST BLOCK
+    # -----------------------------------------------------
+
+    mimecast_keywords = [
+
+        "mimecast",
+
+        "email rejected due to security policies",
+
+        "security policies",
+
+        "mimecast security"
+
+    ]
+
+
+    for keyword in mimecast_keywords:
+
+        if keyword in bounce_text:
+
+            return jsonify({
+
+                "status": "BLOCKED",
+
+                "block_type": "MIMECAST",
+
+                "reason": (
+                    "Recipient mail gateway appears "
+                    "to have rejected the message"
+                ),
+
+                "recipient_email": email,
+
+                "recipient_domain": recipient_domain,
+
+                "sending_domain": sending_domain,
+
+                "bounce_match": keyword
+
+            })
+
+
+    # -----------------------------------------------------
+    # MICROSOFT 365 BLOCK
+    # -----------------------------------------------------
+
+    microsoft_keywords = [
+
+        "microsoft exchange",
+
+        "microsoft 365",
+
+        "office 365",
+
+        "exchange online",
+
+        "protection.outlook.com"
+
+    ]
+
+
+    for keyword in microsoft_keywords:
+
+        if keyword in bounce_text:
+
+            return jsonify({
+
+                "status": "BLOCKED",
+
+                "block_type": "MICROSOFT_365",
+
+                "reason": (
+                    "Microsoft 365 / Exchange appears "
+                    "to have rejected the message"
+                ),
+
+                "recipient_email": email,
+
+                "recipient_domain": recipient_domain,
+
+                "sending_domain": sending_domain,
+
+                "bounce_match": keyword
+
+            })
+
+
+    # -----------------------------------------------------
+    # GENERIC SECURITY BLOCK
+    # -----------------------------------------------------
+
+    security_keywords = [
+
+        "security policy",
+
+        "security policies",
+
+        "spam policy",
+
+        "anti-spam",
+
+        "antispam",
+
+        "sender blocked",
+
+        "sender rejected",
+
+        "policy rejection",
+
+        "blocked",
+
+        "rejected"
+
+    ]
+
+
+    for keyword in security_keywords:
+
+        if keyword in bounce_text:
+
+            return jsonify({
+
+                "status": "BLOCKED",
+
+                "block_type": "SECURITY_POLICY",
+
+                "reason": (
+                    "Recipient server rejected "
+                    "the message due to a security "
+                    "or policy restriction"
+                ),
+
+                "recipient_email": email,
+
+                "recipient_domain": recipient_domain,
+
+                "sending_domain": sending_domain,
+
+                "bounce_match": keyword
+
+            })
+
+
+    # -----------------------------------------------------
+    # UNKNOWN BOUNCE
+    # -----------------------------------------------------
+
+    return jsonify({
+
+        "status": "UNKNOWN",
+
+        "block_type": "UNKNOWN",
+
+        "reason": (
+            "Bounce received but the rejection "
+            "type could not be confidently classified"
+        ),
+
+        "recipient_email": email,
+
+        "recipient_domain": recipient_domain,
+
+        "sending_domain": sending_domain
+
+    })
+
+
+# =========================================================
+# RUN APPLICATION
 # =========================================================
 
 if __name__ == "__main__":
