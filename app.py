@@ -997,3 +997,51 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port
     )
+
+
+@app.route("/smtp-test", methods=["GET"])
+def smtp_test():
+
+    test_host = "gmail-smtp-in.l.google.com"
+    test_port = 25
+
+    try:
+        smtp = smtplib.SMTP(
+            timeout=10
+        )
+
+        code, message = smtp.connect(
+            test_host,
+            test_port
+        )
+
+        smtp.quit()
+
+        return jsonify({
+            "status": "SUCCESS",
+            "smtp_connection": "REACHABLE",
+            "host": test_host,
+            "port": test_port,
+            "response_code": code,
+            "message": str(message)
+        })
+
+    except socket.timeout:
+
+        return jsonify({
+            "status": "BLOCKED_OR_TIMEOUT",
+            "smtp_connection": "NOT REACHABLE",
+            "reason": "Connection timed out",
+            "host": test_host,
+            "port": test_port
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "status": "FAILED",
+            "smtp_connection": "NOT REACHABLE",
+            "reason": str(e),
+            "host": test_host,
+            "port": test_port
+        })
