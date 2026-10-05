@@ -998,50 +998,62 @@ if __name__ == "__main__":
         port=port
     )
 
+@app.route("/smtp-ports-test", methods=["GET"])
+def smtp_ports_test():
 
-@app.route("/smtp-test", methods=["GET"])
-def smtp_test():
+    test_host = "smtp.gmail.com"
 
-    test_host = "gmail-smtp-in.l.google.com"
-    test_port = 25
+    results = {}
 
-    try:
-        smtp = smtplib.SMTP(
-            timeout=10
-        )
+    for port in [465, 587]:
 
-        code, message = smtp.connect(
-            test_host,
-            test_port
-        )
+        sock = None
 
-        smtp.quit()
+        try:
+            sock = socket.create_connection(
+                (test_host, port),
+                timeout=10
+            )
 
-        return jsonify({
-            "status": "SUCCESS",
-            "smtp_connection": "REACHABLE",
-            "host": test_host,
-            "port": test_port,
-            "response_code": code,
-            "message": str(message)
-        })
+            results[str(port)] = {
+                "port": port,
+                "status": "REACHABLE",
+                "message": "TCP connection successful"
+            }
 
-    except socket.timeout:
+        except socket.timeout:
 
-        return jsonify({
-            "status": "BLOCKED_OR_TIMEOUT",
-            "smtp_connection": "NOT REACHABLE",
-            "reason": "Connection timed out",
-            "host": test_host,
-            "port": test_port
-        })
+            results[str(port)] = {
+                "port": port,
+                "status": "TIMEOUT",
+                "message": "Connection timed out"
+            }
 
-    except Exception as e:
+        except OSError as e:
 
-        return jsonify({
-            "status": "FAILED",
-            "smtp_connection": "NOT REACHABLE",
-            "reason": str(e),
-            "host": test_host,
-            "port": test_port
-        })
+            results[str(port)] = {
+                "port": port,
+                "status": "BLOCKED",
+                "message": str(e)
+            }
+
+        except Exception as e:
+
+            results[str(port)] = {
+                "port": port,
+                "status": "FAILED",
+                "message": str(e)
+            }
+
+        finally:
+
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+    return jsonify({
+        "host": test_host,
+        "results": results
+    })
