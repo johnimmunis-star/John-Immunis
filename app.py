@@ -1,501 +1,744 @@
 from flask import Flask, request, jsonify
 import dns.resolver
+import smtplib
+import socket
 import re
+import random
+import string
+import time
+import os
 
 app = Flask(__name__)
 
-
-# =========================================================
+# ============================================================
 # CONFIGURATION
-# =========================================================
+# ============================================================
 
-SENDING_DOMAINS = [
-    "immunisip.com",
-    "immunisdrawings.com"
-]
+# IMPORTANT:
+# These must be DEDICATED verification identities.
+# DO NOT put your production sending addresses here.
+#
+# Set these in Render Environment Variables:
+#
+# VERIFY_SENDER_IP
+# VERIFY_SENDER_DRAWINGS
+#
+# Example:
+# VERIFY_SENDER_IP=verify@your-test-domain.com
+# VERIFY_SENDER_DRAWINGS=verify@your-test-domain.com
+
+VERIFY_SENDER_IP = os.environ.get(
+    "VERIFY_SENDER_IP",
+    ""
+).strip().lower()
+
+VERIFY_SENDER_DRAWINGS = os.environ.get(
+    "VERIFY_SENDER_DRAWINGS",
+    ""
+).strip().lower()
+
+SMTP_TIMEOUT = 8
+
+# Small delay between SMTP checks.
+# This is intentionally conservative.
+CHECK_DELAY = 0.5
+
+# ============================================================
+# GATEWAY DETECTION
+# ============================================================
+
+GATEWAY_PATTERNS = {
+    "MIMECAST": [
+        "mimecast"
+    ],
+
+    "MICROSOFT_365": [
+        "protection.outlook.com",
+        "outlook.com",
+        "microsoft",
+        "office365",
+        "office.com"
+    ],
+
+    "GOOGLE_WORKSPACE": [
+        "google.com",
+        "googlemail.com",
+        "aspmx.l.google.com"
+    ],
+
+    "PROOFPOINT": [
+        "proofpoint"
+    ],
+
+    "BARRACUDA": [
+        "barracuda"
+    ],
+
+    "FORTIMAIL": [
+        "fortimail",
+        "fortinet"
+    ],
+
+    "CISCO": [
+        "cisco",
+        "iphmx.com"
+    ],
+
+    "SYMANTEC": [
+        "symantec",
+        "messagelabs"
+    ],
+
+    "MAILCHANNELS": [
+        "mailchannels"
+    ],
+
+    "SPAMEXPERTS": [
+        "spamexperts"
+    ],
+
+    "MAILROUTE": [
+        "mailroute"
+    ],
+
+    "HORNETSECURITY": [
+        "hornetsecurity"
+    ],
+
+    "FORCEPOINT": [
+        "forcepoint"
+    ],
+
+    "SOPHOS": [
+        "sophos"
+    ],
+
+    "TREND_MICRO": [
+        "trendmicro"
+    ],
+
+    "CLOUDMARK": [
+        "cloudmark"
+    ],
+
+    "ZEROSPAM": [
+        "zerospam"
+    ],
+
+    "SPAMHERO": [
+        "spamhero"
+    ]
+}
 
 
-# =========================================================
-# EMAIL FORMAT CHECK
-# =========================================================
+# ============================================================
+# EMAIL FORMAT
+# ============================================================
 
 def is_valid_email_format(email):
-
-    pattern = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+    pattern = (
+        r"^[A-Za-z0-9._%+-]+@"
+        r"[A-Za-z0-9.-]+\."
+        r"[A-Za-z]{2,}$"
+    )
 
     return re.match(pattern, email) is not None
 
 
-# =========================================================
-# GET MX RECORDS
-# =========================================================
+# ============================================================
+# DOMAIN
+# ============================================================
+
+def get_domain(email):
+    try:
+        return email.split("@", 1)[1].strip().lower()
+    except Exception:
+        return ""
+
+
+# ============================================================
+# MX LOOKUP
+# ============================================================
 
 def get_mx_records(domain):
 
     try:
-
         answers = dns.resolver.resolve(
             domain,
             "MX",
-            lifetime=10
+            lifetime=8
         )
 
         records = []
 
         for answer in answers:
-
-            mx_host = str(
+            host = str(
                 answer.exchange
             ).rstrip(".").lower()
 
-            records.append(mx_host)
+            records.append({
+                "priority": int(answer.preference),
+                "host": host
+            })
+
+        records.sort(
+            key=lambda x: x["priority"]
+        )
 
         return records
 
     except Exception:
-
         return []
 
 
-# =========================================================
-# DETECT MAIL GATEWAY
-# =========================================================
+# ============================================================
+# GATEWAY DETECTION
+# ============================================================
 
-def detect_mail_gateway(mx_records):
+def detect_gateway(mx_records):
 
-    mx_text = " ".join(mx_records).lower()
+    if not mx_records:
+        return "UNKNOWN"
+
+    combined = " ".join(
+        item["host"].lower()
+        for item in mx_records
+    )
+
+    for gateway, patterns in GATEWAY_PATTERNS.items():
+
+        for pattern in patterns:
+
+            if pattern.lower() in combined:
+                return gateway
+
+    return "OTHER"
 
 
-    # -----------------------------------------------------
-    # MIMECAST
-    # -----------------------------------------------------
+# ============================================================
+# SMTP RESPONSE CLASSIFICATION
+# ============================================================
 
-    mimecast_keywords = [
-        "mimecast.com",
-        "mimecast.co.uk",
-        "mimecast.com.au",
-        "mimecastcloud.com",
-        "mimecast"
+def classify_smtp_response(code, message):
+
+    msg = (
+        message or ""
+    ).lower()
+
+    # --------------------------------------------------------
+    # Explicit mailbox rejection
+    # --------------------------------------------------------
+
+    rejection_patterns = [
+        "user unknown",
+        "unknown user",
+        "unknown recipient",
+        "mailbox unavailable",
+        "mailbox not found",
+        "no such user",
+        "no such mailbox",
+        "recipient not found",
+        "invalid recipient",
+        "invalid mailbox",
+        "does not exist",
+        "account does not exist",
+        "recipient rejected",
+        "user doesn't exist",
+        "user does not exist",
+        "5.1.1",
+        "550 5.1.1"
     ]
 
-    for keyword in mimecast_keywords:
+    for pattern in rejection_patterns:
 
-        if keyword in mx_text:
-
+        if pattern in msg:
             return {
-                "gateway": "MIMECAST",
-                "provider": "Mimecast",
-                "security_gateway": True
+                "result": "REJECTED",
+                "reason": "Recipient mailbox rejected by server"
             }
 
+    # --------------------------------------------------------
+    # Security / gateway block
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # MICROSOFT 365
-    # -----------------------------------------------------
-
-    microsoft_keywords = [
-        "mail.protection.outlook.com",
-        "protection.outlook.com"
-    ]
-
-    for keyword in microsoft_keywords:
-
-        if keyword in mx_text:
-
-            return {
-                "gateway": "MICROSOFT_365",
-                "provider": "Microsoft 365 / Exchange Online",
-                "security_gateway": True
-            }
-
-
-    # -----------------------------------------------------
-    # GOOGLE WORKSPACE
-    # -----------------------------------------------------
-
-    google_keywords = [
-        "aspmx.l.google.com",
-        "alt1.aspmx.l.google.com",
-        "alt2.aspmx.l.google.com",
-        "alt3.aspmx.l.google.com",
-        "alt4.aspmx.l.google.com"
-    ]
-
-    for keyword in google_keywords:
-
-        if keyword in mx_text:
-
-            return {
-                "gateway": "GOOGLE_WORKSPACE",
-                "provider": "Google Workspace",
-                "security_gateway": False
-            }
-
-
-    # -----------------------------------------------------
-    # PROOFPOINT
-    # -----------------------------------------------------
-
-    proofpoint_keywords = [
-        "proofpoint.com",
-        "pphosted.com",
-        "proofpoint"
-    ]
-
-    for keyword in proofpoint_keywords:
-
-        if keyword in mx_text:
-
-            return {
-                "gateway": "PROOFPOINT",
-                "provider": "Proofpoint",
-                "security_gateway": True
-            }
-
-
-    # -----------------------------------------------------
-    # BARRACUDA
-    # -----------------------------------------------------
-
-    barracuda_keywords = [
-        "barracudanetworks.com",
-        "barracuda.com",
+    security_patterns = [
+        "security policy",
+        "security policies",
+        "blocked by policy",
+        "blocked by mail flow rule",
+        "mail flow rule",
+        "transport rule",
+        "sender blocked",
+        "sender rejected",
+        "spam policy",
+        "anti-spam",
+        "access denied",
+        "policy rejection",
+        "mimecast",
+        "proofpoint",
         "barracuda"
     ]
 
-    for keyword in barracuda_keywords:
+    for pattern in security_patterns:
 
-        if keyword in mx_text:
-
+        if pattern in msg:
             return {
-                "gateway": "BARRACUDA",
-                "provider": "Barracuda",
-                "security_gateway": True
+                "result": "UNKNOWN",
+                "reason": "Recipient gateway/security policy prevented verification"
             }
 
+    # --------------------------------------------------------
+    # Temporary failure
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # FORTIMAIL
-    # -----------------------------------------------------
+    if 400 <= code < 500:
 
-    fortimail_keywords = [
-        "fortimail",
-        "fortimailcloud.com",
-        "fortinet.com"
-    ]
+        return {
+            "result": "UNKNOWN",
+            "reason": "Temporary SMTP rejection"
+        }
 
-    for keyword in fortimail_keywords:
+    # --------------------------------------------------------
+    # Successful RCPT
+    # --------------------------------------------------------
 
-        if keyword in mx_text:
+    if 200 <= code < 300:
 
-            return {
-                "gateway": "FORTIMAIL",
-                "provider": "Fortinet FortiMail",
-                "security_gateway": True
-            }
+        return {
+            "result": "ACCEPTED",
+            "reason": "Recipient server accepted the SMTP recipient"
+        }
 
+    # --------------------------------------------------------
+    # Permanent rejection
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # CISCO SECURE EMAIL
-    # -----------------------------------------------------
+    if 500 <= code < 600:
 
-    cisco_keywords = [
-        "iphmx.com",
-        "cisco.com"
-    ]
-
-    for keyword in cisco_keywords:
-
-        if keyword in mx_text:
-
-            return {
-                "gateway": "CISCO",
-                "provider": "Cisco Secure Email",
-                "security_gateway": True
-            }
-
-
-    # -----------------------------------------------------
-    # OTHER SECURITY GATEWAYS
-    # -----------------------------------------------------
-
-    other_gateways = {
-
-        "messagelabs": "Symantec / MessageLabs",
-
-        "symantec": "Symantec",
-
-        "mailchannels": "MailChannels",
-
-        "spamexperts": "SpamExperts",
-
-        "mailroute": "MailRoute",
-
-        "hornetsecurity": "Hornetsecurity",
-
-        "forcepoint": "Forcepoint",
-
-        "sophos": "Sophos",
-
-        "trendmicro": "Trend Micro",
-
-        "cloudmark": "Cloudmark",
-
-        "zerospam": "ZeroSpam",
-
-        "spamhero": "SpamHero"
-
-    }
-
-
-    for keyword, provider in other_gateways.items():
-
-        if keyword in mx_text:
-
-            return {
-                "gateway": "OTHER_GATEWAY",
-                "provider": provider,
-                "security_gateway": True
-            }
-
-
-    # -----------------------------------------------------
-    # NORMAL / UNKNOWN MAIL SERVER
-    # -----------------------------------------------------
+        return {
+            "result": "REJECTED",
+            "reason": "Recipient server permanently rejected the recipient"
+        }
 
     return {
-        "gateway": "OTHER",
-        "provider": "Unknown mail server",
-        "security_gateway": False
+        "result": "UNKNOWN",
+        "reason": "SMTP response could not be classified"
     }
 
 
-# =========================================================
-# VERIFY EMAIL
-# =========================================================
+# ============================================================
+# SMTP RECIPIENT CHECK
+# ============================================================
+
+def smtp_recipient_check(
+    email,
+    mx_host,
+    sender_email
+):
+
+    smtp = None
+
+    try:
+
+        # ----------------------------------------------------
+        # Connect to recipient MX
+        # ----------------------------------------------------
+
+        smtp = smtplib.SMTP(
+            timeout=SMTP_TIMEOUT
+        )
+
+        smtp.connect(
+            mx_host,
+            25
+        )
+
+        # ----------------------------------------------------
+        # EHLO
+        # ----------------------------------------------------
+
+        code, message = smtp.ehlo()
+
+        if code >= 400:
+
+            return {
+                "result": "UNKNOWN",
+                "reason": "Recipient server rejected EHLO"
+            }
+
+        # ----------------------------------------------------
+        # MAIL FROM
+        #
+        # IMPORTANT:
+        # This does NOT send an email.
+        # We stop at RCPT TO.
+        # ----------------------------------------------------
+
+        code, message = smtp.mail(
+            sender_email
+        )
+
+        if code >= 400:
+
+            return {
+                "result": "UNKNOWN",
+                "reason": (
+                    "Recipient server rejected verification "
+                    "sender"
+                )
+            }
+
+        # ----------------------------------------------------
+        # RCPT TO
+        # ----------------------------------------------------
+
+        code, message = smtp.rcpt(
+            email
+        )
+
+        message_text = ""
+
+        try:
+            if isinstance(message, bytes):
+                message_text = message.decode(
+                    "utf-8",
+                    errors="ignore"
+                )
+            else:
+                message_text = str(message)
+        except Exception:
+            message_text = ""
+
+        result = classify_smtp_response(
+            code,
+            message_text
+        )
+
+        return result
+
+    except socket.timeout:
+
+        return {
+            "result": "UNKNOWN",
+            "reason": "SMTP connection timed out"
+        }
+
+    except ConnectionRefusedError:
+
+        return {
+            "result": "UNKNOWN",
+            "reason": "Recipient SMTP server refused connection"
+        }
+
+    except OSError as e:
+
+        return {
+            "result": "UNKNOWN",
+            "reason": (
+                "SMTP connection unavailable: "
+                + str(e)
+            )
+        }
+
+    except Exception as e:
+
+        return {
+            "result": "UNKNOWN",
+            "reason": (
+                "SMTP verification unavailable: "
+                + str(e)
+            )
+        }
+
+    finally:
+
+        if smtp:
+
+            try:
+                smtp.rset()
+            except Exception:
+                pass
+
+            try:
+                smtp.quit()
+            except Exception:
+                pass
+
+
+# ============================================================
+# CHECK ONE SENDING DOMAIN
+# ============================================================
+
+def check_sending_domain(
+    recipient_email,
+    mx_records,
+    sender_email
+):
+
+    if not sender_email:
+
+        return {
+            "result": "UNKNOWN",
+            "confidence": "LOW",
+            "reason": (
+                "Dedicated verification sender "
+                "is not configured"
+            )
+        }
+
+    if not mx_records:
+
+        return {
+            "result": "UNKNOWN",
+            "confidence": "LOW",
+            "reason": "No MX server available"
+        }
+
+    # --------------------------------------------------------
+    # Try MX servers in priority order
+    # --------------------------------------------------------
+
+    unknown_reasons = []
+
+    for mx in mx_records:
+
+        mx_host = mx["host"]
+
+        result = smtp_recipient_check(
+            recipient_email,
+            mx_host,
+            sender_email
+        )
+
+        if result["result"] == "ACCEPTED":
+
+            return {
+                "result": "ACCEPTED",
+                "confidence": "HIGH",
+                "reason": result["reason"],
+                "mx_host": mx_host
+            }
+
+        if result["result"] == "REJECTED":
+
+            return {
+                "result": "REJECTED",
+                "confidence": "HIGH",
+                "reason": result["reason"],
+                "mx_host": mx_host
+            }
+
+        unknown_reasons.append(
+            result["reason"]
+        )
+
+        # Conservative delay
+        time.sleep(
+            CHECK_DELAY
+        )
+
+    return {
+        "result": "UNKNOWN",
+        "confidence": "LOW",
+        "reason": (
+            "SMTP verification could not obtain "
+            "a reliable recipient decision"
+        )
+    }
+
+
+# ============================================================
+# COMPLETE EMAIL VERIFICATION
+# ============================================================
 
 def verify_email(email):
 
     email = email.strip().lower()
 
-
-    # -----------------------------------------------------
-    # EMPTY EMAIL
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Format
+    # --------------------------------------------------------
 
     if not email:
 
         return {
-            "status": "INVALID",
+            "status": "RISK",
             "reason": "Email address is empty"
         }
-
-
-    # -----------------------------------------------------
-    # EMAIL FORMAT
-    # -----------------------------------------------------
 
     if not is_valid_email_format(email):
 
         return {
-            "status": "INVALID",
+            "status": "RISK",
             "reason": "Invalid email format"
         }
 
+    # --------------------------------------------------------
+    # Domain
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # EXTRACT DOMAIN
-    # -----------------------------------------------------
+    domain = get_domain(email)
 
-    try:
-
-        recipient_domain = email.split("@", 1)[1].strip().lower()
-
-    except Exception:
+    if not domain:
 
         return {
-            "status": "INVALID",
+            "status": "RISK",
             "reason": "Could not extract recipient domain"
         }
 
-
-    # -----------------------------------------------------
-    # GET MX
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # MX
+    # --------------------------------------------------------
 
     mx_records = get_mx_records(
-        recipient_domain
+        domain
     )
-
-
-    # -----------------------------------------------------
-    # NO MX
-    # -----------------------------------------------------
 
     if not mx_records:
 
         return {
-
-            "status": "NO_MX",
-
-            "reason": (
-                "No valid MX record found for recipient domain"
-            ),
-
-            "recipient_email": email,
-
-            "recipient_domain": recipient_domain,
-
-            "gateway": "NONE",
-
-            "provider": "None",
-
-            "security_gateway": False,
-
-            "mx_records": []
+            "status": "RISK",
+            "reason": "No valid MX record found",
+            "recipient_domain": domain,
+            "gateway": "UNKNOWN",
+            "ip_result": "UNKNOWN",
+            "drawings_result": "UNKNOWN"
         }
 
-
-    # -----------------------------------------------------
-    # DETECT GATEWAY
-    # -----------------------------------------------------
-
-    gateway_info = detect_mail_gateway(
+    gateway = detect_gateway(
         mx_records
     )
 
-    gateway = gateway_info["gateway"]
+    # --------------------------------------------------------
+    # Prepare MX list
+    # --------------------------------------------------------
 
-    provider = gateway_info["provider"]
+    mx_hosts = [
+        item["host"]
+        for item in mx_records
+    ]
 
-    security_gateway = gateway_info["security_gateway"]
+    # --------------------------------------------------------
+    # IP / immunisip.com
+    # --------------------------------------------------------
 
+    ip_check = check_sending_domain(
+        email,
+        mx_records,
+        VERIFY_SENDER_IP
+    )
 
-    # -----------------------------------------------------
-    # DETERMINE STATUS
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Small delay between tests
+    # --------------------------------------------------------
 
-    if gateway == "MIMECAST":
+    time.sleep(
+        CHECK_DELAY
+    )
 
-        status = "MIMECAST"
+    # --------------------------------------------------------
+    # Drawings / immunisdrawings.com
+    # --------------------------------------------------------
 
-        reason = (
-            "Mimecast mail gateway detected from "
-            "recipient MX records"
-        )
+    drawings_check = check_sending_domain(
+        email,
+        mx_records,
+        VERIFY_SENDER_DRAWINGS
+    )
 
+    # --------------------------------------------------------
+    # Overall status
+    # --------------------------------------------------------
 
-    elif gateway == "MICROSOFT_365":
+    if (
+        ip_check["result"] == "REJECTED"
+        and
+        drawings_check["result"] == "REJECTED"
+    ):
 
-        status = "MICROSOFT_365"
+        overall_status = "RISK"
 
-        reason = (
-            "Microsoft 365 / Exchange Online "
-            "mail gateway detected from recipient MX records"
-        )
+    elif (
+        ip_check["result"] == "ACCEPTED"
+        or
+        drawings_check["result"] == "ACCEPTED"
+    ):
 
-
-    elif gateway == "GOOGLE_WORKSPACE":
-
-        status = "GOOGLE_WORKSPACE"
-
-        reason = (
-            "Google Workspace mail server detected "
-            "from recipient MX records"
-        )
-
-
-    elif security_gateway:
-
-        status = gateway
-
-        reason = (
-            provider +
-            " mail gateway detected from recipient MX records"
-        )
-
+        overall_status = "VALID"
 
     else:
 
-        status = "VALID"
+        overall_status = "UNKNOWN"
 
-        reason = (
-            "Valid email format and recipient "
-            "mail server found"
-        )
+    # --------------------------------------------------------
+    # Reason
+    # --------------------------------------------------------
 
-
-    # -----------------------------------------------------
-    # FINAL RESULT
-    # -----------------------------------------------------
+    reason = (
+        "IP: "
+        + ip_check["reason"]
+        + " | Drawings: "
+        + drawings_check["reason"]
+    )
 
     return {
 
-        "status": status,
+        "status": overall_status,
 
         "reason": reason,
 
         "recipient_email": email,
 
-        "recipient_domain": recipient_domain,
+        "recipient_domain": domain,
 
         "gateway": gateway,
 
-        "provider": provider,
+        "security_gateway": gateway,
 
-        "security_gateway": security_gateway,
+        "mx_records": mx_hosts,
 
-        "mx_records": mx_records,
+        "ip_result": ip_check["result"],
 
-        "mailbox_verified": False,
+        "ip_confidence": ip_check["confidence"],
 
-        "verification_level": "DOMAIN_AND_MX_ONLY"
+        "ip_reason": ip_check["reason"],
 
+        "drawings_result": drawings_check["result"],
+
+        "drawings_confidence": drawings_check["confidence"],
+
+        "drawings_reason": drawings_check["reason"],
+
+        "verification_level": (
+            "SMTP recipient verification"
+        )
     }
 
 
-# =========================================================
-# HOME / API STATUS
-# =========================================================
+# ============================================================
+# HOME
+# ============================================================
 
 @app.route("/", methods=["GET"])
 def home():
 
     return jsonify({
-
         "status": "online",
-
         "service": "IMMUNIS Email Verification API",
-
-        "version": "5.0",
-
-        "sending_domains": SENDING_DOMAINS,
-
-        "verification": [
-            "EMAIL_FORMAT",
-            "DOMAIN",
-            "MX",
-            "MAIL_GATEWAY"
-        ],
-
-        "note": (
-            "Individual mailbox existence cannot be "
-            "guaranteed through DNS/MX alone."
-        )
+        "version": "6.0",
+        "method": "Conservative SMTP recipient verification"
     })
 
 
-# =========================================================
-# VERIFY ENDPOINT
-# =========================================================
+# ============================================================
+# VERIFY
+# ============================================================
 
-@app.route("/verify", methods=["GET", "POST"])
+@app.route(
+    "/verify",
+    methods=["GET", "POST"]
+)
 def verify():
-
-
-    # -----------------------------------------------------
-    # GET REQUEST
-    # -----------------------------------------------------
 
     if request.method == "GET":
 
@@ -509,11 +752,6 @@ def verify():
             ""
         ).strip()
 
-
-    # -----------------------------------------------------
-    # POST REQUEST
-    # -----------------------------------------------------
-
     else:
 
         data = request.get_json(
@@ -521,65 +759,31 @@ def verify():
         ) or {}
 
         email = str(
-            data.get(
-                "email",
-                ""
-            )
+            data.get("email", "")
         ).strip()
 
         full_name = str(
-            data.get(
-                "full_name",
-                ""
-            )
+            data.get("full_name", "")
         ).strip()
-
-
-    # -----------------------------------------------------
-    # MISSING EMAIL
-    # -----------------------------------------------------
 
     if not email:
 
         return jsonify({
-
             "full_name": full_name,
-
-            "recipient_email": "",
-
-            "recipient_domain": "",
-
-            "status": "INVALID",
-
+            "email": "",
+            "status": "RISK",
             "reason": "Email address is missing"
-
         }), 400
 
-
-    # -----------------------------------------------------
-    # VERIFY
-    # -----------------------------------------------------
-
-    result = verify_email(email)
-
-
-    # -----------------------------------------------------
-    # RESPONSE
-    # -----------------------------------------------------
+    result = verify_email(
+        email
+    )
 
     response = {
 
         "full_name": full_name,
 
-        "recipient_email": result.get(
-            "recipient_email",
-            email
-        ),
-
-        "recipient_domain": result.get(
-            "recipient_domain",
-            ""
-        ),
+        "email": email,
 
         "status": result.get(
             "status",
@@ -591,29 +795,54 @@ def verify():
             "Unable to verify"
         ),
 
+        "recipient_domain": result.get(
+            "recipient_domain",
+            ""
+        ),
+
         "gateway": result.get(
             "gateway",
             "UNKNOWN"
         ),
 
-        "provider": result.get(
-            "provider",
-            "Unknown"
-        ),
-
         "security_gateway": result.get(
             "security_gateway",
-            False
+            "UNKNOWN"
         ),
 
-        "mailbox_verified": result.get(
-            "mailbox_verified",
-            False
+        "ip_result": result.get(
+            "ip_result",
+            "UNKNOWN"
+        ),
+
+        "ip_confidence": result.get(
+            "ip_confidence",
+            "LOW"
+        ),
+
+        "ip_reason": result.get(
+            "ip_reason",
+            ""
+        ),
+
+        "drawings_result": result.get(
+            "drawings_result",
+            "UNKNOWN"
+        ),
+
+        "drawings_confidence": result.get(
+            "drawings_confidence",
+            "LOW"
+        ),
+
+        "drawings_reason": result.get(
+            "drawings_reason",
+            ""
         ),
 
         "verification_level": result.get(
             "verification_level",
-            "UNKNOWN"
+            "SMTP recipient verification"
         ),
 
         "mx_records": result.get(
@@ -622,389 +851,38 @@ def verify():
         )
     }
 
+    return jsonify(
+        response
+    )
 
-    return jsonify(response)
 
+# ============================================================
+# ERROR HANDLER
+# ============================================================
 
-# =========================================================
-# BOUNCE ANALYZER
-# =========================================================
-#
-# This endpoint is for ACTUAL bounce messages.
-#
-# Example:
-#
-# POST /bounce
-#
-# {
-#   "email": "person@example.com",
-#   "sending_domain": "immunisdrawings.com",
-#   "bounce_message": "550 User unknown"
-# }
-#
-# =========================================================
-
-@app.route("/bounce", methods=["POST"])
-def bounce():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-
-    email = str(
-        data.get(
-            "email",
-            ""
-        )
-    ).strip().lower()
-
-
-    sending_domain = str(
-        data.get(
-            "sending_domain",
-            ""
-        )
-    ).strip().lower()
-
-
-    bounce_message = str(
-        data.get(
-            "bounce_message",
-            ""
-        )
-    ).strip()
-
-
-    # -----------------------------------------------------
-    # MISSING DATA
-    # -----------------------------------------------------
-
-    if not email or not bounce_message:
-
-        return jsonify({
-
-            "status": "UNKNOWN",
-
-            "reason": (
-                "Recipient email and bounce message "
-                "are required"
-            )
-
-        }), 400
-
-
-    # -----------------------------------------------------
-    # EXTRACT RECIPIENT DOMAIN
-    # -----------------------------------------------------
-
-    try:
-
-        recipient_domain = email.split(
-            "@",
-            1
-        )[1]
-
-    except Exception:
-
-        recipient_domain = ""
-
-
-    # -----------------------------------------------------
-    # LOWERCASE BOUNCE
-    # -----------------------------------------------------
-
-    bounce_text = bounce_message.lower()
-
-
-    # -----------------------------------------------------
-    # MAILBOX NOT FOUND
-    # -----------------------------------------------------
-
-    mailbox_keywords = [
-
-        "user unknown",
-
-        "unknown user",
-
-        "mailbox unavailable",
-
-        "mailbox not found",
-
-        "recipient not found",
-
-        "no such user",
-
-        "no such mailbox",
-
-        "user does not exist",
-
-        "account does not exist",
-
-        "address rejected",
-
-        "invalid recipient",
-
-        "recipient address rejected",
-
-        "550 5.1.1",
-
-        "550 5.1.10",
-
-        "551 5.1.1"
-
-    ]
-
-
-    for keyword in mailbox_keywords:
-
-        if keyword in bounce_text:
-
-            return jsonify({
-
-                "status": "REJECTED",
-
-                "block_type": "MAILBOX",
-
-                "reason": (
-                    "Recipient mailbox appears to be "
-                    "invalid or unavailable"
-                ),
-
-                "recipient_email": email,
-
-                "recipient_domain": recipient_domain,
-
-                "sending_domain": sending_domain,
-
-                "bounce_match": keyword
-
-            })
-
-
-    # -----------------------------------------------------
-    # MAIL FLOW RULE
-    # -----------------------------------------------------
-
-    mail_flow_keywords = [
-
-        "blocked by mail flow rule",
-
-        "mail flow rule",
-
-        "transport rule",
-
-        "message blocked by administrator",
-
-        "organization policy",
-
-        "organizational policy"
-
-    ]
-
-
-    for keyword in mail_flow_keywords:
-
-        if keyword in bounce_text:
-
-            return jsonify({
-
-                "status": "BLOCKED",
-
-                "block_type": "MAIL_FLOW",
-
-                "reason": (
-                    "Recipient organization blocked "
-                    "the message through a mail flow or "
-                    "transport rule"
-                ),
-
-                "recipient_email": email,
-
-                "recipient_domain": recipient_domain,
-
-                "sending_domain": sending_domain,
-
-                "bounce_match": keyword
-
-            })
-
-
-    # -----------------------------------------------------
-    # MIMECAST BLOCK
-    # -----------------------------------------------------
-
-    mimecast_keywords = [
-
-        "mimecast",
-
-        "email rejected due to security policies",
-
-        "security policies",
-
-        "mimecast security"
-
-    ]
-
-
-    for keyword in mimecast_keywords:
-
-        if keyword in bounce_text:
-
-            return jsonify({
-
-                "status": "BLOCKED",
-
-                "block_type": "MIMECAST",
-
-                "reason": (
-                    "Recipient mail gateway appears "
-                    "to have rejected the message"
-                ),
-
-                "recipient_email": email,
-
-                "recipient_domain": recipient_domain,
-
-                "sending_domain": sending_domain,
-
-                "bounce_match": keyword
-
-            })
-
-
-    # -----------------------------------------------------
-    # MICROSOFT 365 BLOCK
-    # -----------------------------------------------------
-
-    microsoft_keywords = [
-
-        "microsoft exchange",
-
-        "microsoft 365",
-
-        "office 365",
-
-        "exchange online",
-
-        "protection.outlook.com"
-
-    ]
-
-
-    for keyword in microsoft_keywords:
-
-        if keyword in bounce_text:
-
-            return jsonify({
-
-                "status": "BLOCKED",
-
-                "block_type": "MICROSOFT_365",
-
-                "reason": (
-                    "Microsoft 365 / Exchange appears "
-                    "to have rejected the message"
-                ),
-
-                "recipient_email": email,
-
-                "recipient_domain": recipient_domain,
-
-                "sending_domain": sending_domain,
-
-                "bounce_match": keyword
-
-            })
-
-
-    # -----------------------------------------------------
-    # GENERIC SECURITY BLOCK
-    # -----------------------------------------------------
-
-    security_keywords = [
-
-        "security policy",
-
-        "security policies",
-
-        "spam policy",
-
-        "anti-spam",
-
-        "antispam",
-
-        "sender blocked",
-
-        "sender rejected",
-
-        "policy rejection",
-
-        "blocked",
-
-        "rejected"
-
-    ]
-
-
-    for keyword in security_keywords:
-
-        if keyword in bounce_text:
-
-            return jsonify({
-
-                "status": "BLOCKED",
-
-                "block_type": "SECURITY_POLICY",
-
-                "reason": (
-                    "Recipient server rejected "
-                    "the message due to a security "
-                    "or policy restriction"
-                ),
-
-                "recipient_email": email,
-
-                "recipient_domain": recipient_domain,
-
-                "sending_domain": sending_domain,
-
-                "bounce_match": keyword
-
-            })
-
-
-    # -----------------------------------------------------
-    # UNKNOWN BOUNCE
-    # -----------------------------------------------------
+@app.errorhandler(Exception)
+def handle_exception(error):
 
     return jsonify({
-
         "status": "UNKNOWN",
-
-        "block_type": "UNKNOWN",
-
-        "reason": (
-            "Bounce received but the rejection "
-            "type could not be confidently classified"
-        ),
-
-        "recipient_email": email,
-
-        "recipient_domain": recipient_domain,
-
-        "sending_domain": sending_domain
-
-    })
+        "reason": "Internal verification error: " + str(error)
+    }), 500
 
 
-# =========================================================
-# RUN APPLICATION
-# =========================================================
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
 
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
     app.run(
         host="0.0.0.0",
-        port=10000
+        port=port
     )
